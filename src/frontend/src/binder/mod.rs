@@ -44,6 +44,7 @@ use risingwave_common::error::ErrorCode;
 pub use select::BoundSelect;
 pub use set_expr::BoundSetExpr;
 pub use statement::BoundStatement;
+use tracing::instrument;
 pub use update::BoundUpdate;
 pub use values::BoundValues;
 
@@ -92,6 +93,7 @@ impl Binder {
     }
 
     /// Bind a [`Statement`].
+    #[instrument(skip_all)]
     pub fn bind(&mut self, stmt: Statement) -> Result<BoundStatement> {
         self.bind_statement(stmt)
     }

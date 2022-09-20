@@ -18,7 +18,7 @@ use pgwire::types::Row;
 use risingwave_common::error::Result;
 use risingwave_common::session_config::QueryMode;
 use risingwave_sqlparser::ast::Statement;
-use tracing::debug;
+use tracing::{debug, instrument};
 
 use crate::binder::{Binder, BoundStatement};
 use crate::handler::privilege::{check_privileges, resolve_privileges};
@@ -31,6 +31,7 @@ use crate::session::{OptimizerContext, SessionImpl};
 
 pub type QueryResultSet = Vec<Row>;
 
+#[instrument(skip_all)]
 pub async fn handle_query(
     context: OptimizerContext,
     stmt: Statement,
@@ -103,6 +104,7 @@ fn to_statement_type(stmt: &Statement) -> StatementType {
     }
 }
 
+#[instrument(skip_all)]
 pub async fn distribute_execute(
     context: OptimizerContext,
     stmt: BoundStatement,

@@ -25,7 +25,7 @@ use risingwave_pb::common::HostAddress;
 use risingwave_rpc_client::ComputeClientPoolRef;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::sync::{oneshot, RwLock};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, warn, instrument};
 
 use super::{QueryResultFetcher, StageEvent};
 use crate::catalog::catalog_service::CatalogReader;
@@ -217,6 +217,7 @@ impl QueryExecution {
 }
 
 impl QueryRunner {
+    #[instrument(skip_all)]
     async fn run(mut self) {
         // Start leaf stages.
         let leaf_stages = self.query.leaf_stages();

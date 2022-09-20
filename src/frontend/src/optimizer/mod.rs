@@ -30,6 +30,7 @@ use itertools::Itertools as _;
 use property::Order;
 use risingwave_common::catalog::Schema;
 use risingwave_common::error::{ErrorCode, Result};
+use tracing::instrument;
 
 use self::heuristic::{ApplyOrder, HeuristicOptimizer};
 use self::plan_node::{BatchProject, Convention, LogicalProject, StreamMaterialize};
@@ -321,6 +322,7 @@ impl PlanRoot {
     }
 
     /// Optimize and generate a singleton batch physical plan without exchange nodes.
+    #[instrument(skip_all)]
     fn gen_batch_plan(&self) -> Result<PlanRef> {
         // Logical optimization
         let mut plan = self.gen_optimized_logical_plan()?;

@@ -25,7 +25,7 @@ use risingwave_common::error::RwError;
 use risingwave_pb::batch_plan::TaskOutputId;
 use risingwave_pb::common::HostAddress;
 use risingwave_rpc_client::ComputeClientPoolRef;
-use tracing::debug;
+use tracing::{debug, instrument};
 
 use super::QueryExecution;
 use crate::catalog::catalog_service::CatalogReader;
@@ -78,6 +78,7 @@ impl QueryManager {
         }
     }
 
+    #[instrument(skip_all)]
     pub async fn schedule(
         &self,
         context: ExecutionContextRef,
@@ -190,6 +191,7 @@ impl QueryResultFetcher {
         Box::pin(self.run_inner())
     }
 
+    #[instrument(skip_all)]
     async fn collect_rows_from_channel(mut self, format: bool) -> SchedulerResult<QueryResultSet> {
         let mut result_sets = vec![];
         while let Some(chunk_inner) = self.chunk_rx.recv().await {
