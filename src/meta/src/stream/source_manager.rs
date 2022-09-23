@@ -649,36 +649,40 @@ where
         Ok(())
     }
 
-    pub async fn drop_source(&self, source_id: SourceId) -> MetaResult<()> {
+    pub async fn drop_sources(&self, source_ids: Vec<SourceId>) -> MetaResult<()> {
         let futures = self.all_stream_clients().await?.into_iter().map(|client| {
-            let request = ComputeNodeDropSourceRequest { source_id };
+            let request = ComputeNodeDropSourceRequest {
+                source_ids: source_ids.clone(),
+            };
             async move { client.drop_source(request).await }
         });
         let _responses: Vec<_> = try_join_all(futures).await?;
 
         let mut core = self.core.lock().await;
-        if let Some(handle) = core.managed_sources.remove(&source_id) {
-            handle.handle.abort();
-        }
+        for source_id in source_ids {
+            if let Some(handle) = core.managed_sources.remove(&source_id) {
+                handle.handle.abort();
+            }
 
-        assert!(
-            !core.source_fragments.contains_key(&source_id),
-            "dropping source {}, but associated fragments still exists",
-            source_id
-        );
-
-        // Unregister afterwards and is safeguarded by
-        // CompactionGroupManager::purge_stale_members.
-        if let Err(e) = self
-            .compaction_group_manager
-            .unregister_source(source_id)
-            .await
-        {
-            tracing::warn!(
-                "Failed to unregister source {}. It will be unregistered eventually.\n{:#?}",
-                source_id,
-                e
+            assert!(
+                !core.source_fragments.contains_key(&source_id),
+                "dropping source {}, but associated fragments still exists",
+                source_id
             );
+
+            // Unregister afterwards and is safeguarded by
+            // CompactionGroupManager::purge_stale_members.
+            if let Err(e) = self
+                .compaction_group_manager
+                .unregister_source(source_id)
+                .await
+            {
+                tracing::warn!(
+                    "Failed to unregister source {}. It will be unregistered eventually.\n{:#?}",
+                    source_id,
+                    e
+                );
+            }
         }
 
         Ok(())

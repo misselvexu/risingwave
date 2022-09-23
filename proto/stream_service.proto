@@ -109,7 +109,7 @@ message CreateSourceResponse {
 }
 
 message DropSourceRequest {
-  uint32 source_id = 1;
+  repeated uint32 source_ids = 1;
 }
 
 message DropSourceResponse {

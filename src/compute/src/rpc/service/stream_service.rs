@@ -211,15 +211,16 @@ impl StreamService for StreamServiceImpl {
         &self,
         request: Request<DropSourceRequest>,
     ) -> Result<Response<DropSourceResponse>, Status> {
-        let id = request.into_inner().source_id;
-        let id = TableId::new(id); // TODO: use SourceId instead
+        let ids = request.into_inner().source_ids;
+        // TODO: use SourceId instead
+        let ids = ids.into_iter().map(TableId::new).collect_vec();
 
         self.env
             .source_manager()
-            .drop_source(&id)
+            .drop_sources(&ids)
             .map_err(tonic_err)?;
 
-        tracing::debug!(id = %id, "drop source");
+        tracing::debug!(id = ?ids, "drop sources");
 
         Ok(Response::new(DropSourceResponse { status: None }))
     }

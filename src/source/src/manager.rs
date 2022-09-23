@@ -17,6 +17,7 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use itertools::Itertools;
 use parking_lot::{Mutex, MutexGuard};
 use risingwave_common::catalog::{ColumnDesc, ColumnId, TableId};
 use risingwave_common::ensure;
@@ -46,7 +47,7 @@ pub trait SourceManager: Debug + Sync + Send {
     ) -> Result<()>;
 
     fn get_source(&self, source_id: &TableId) -> Result<SourceDesc>;
-    fn drop_source(&self, source_id: &TableId) -> Result<()>;
+    fn drop_sources(&self, source_ids: &[TableId]) -> Result<()>;
 
     /// Clear sources, this is used when failover happens.
     fn clear_sources(&self) -> Result<()>;
@@ -245,14 +246,18 @@ impl SourceManager for MemSourceManager {
         })
     }
 
-    fn drop_source(&self, table_id: &TableId) -> Result<()> {
+    fn drop_sources(&self, table_ids: &[TableId]) -> Result<()> {
         let mut sources = self.get_sources()?;
+        let sources_keys = sources.keys().collect_vec();
         ensure!(
-            sources.contains_key(table_id),
+            table_ids.iter().all(|id| sources_keys.contains(&id)),
             "Source does not exist: {:?}",
-            table_id
+            table_ids
+                .iter()
+                .filter(|id| !sources_keys.contains(id))
+                .collect_vec(),
         );
-        sources.remove(table_id);
+        sources.retain(|k, _| !table_ids.contains(k));
         Ok(())
     }
 
@@ -374,7 +379,7 @@ mod tests {
         assert!(get_source_res.is_ok());
 
         // drop source
-        let drop_source_res = mem_source_manager.drop_source(&table_id);
+        let drop_source_res = mem_source_manager.drop_sources(&[table_id]);
         assert!(drop_source_res.is_ok());
         let get_source_res = mem_source_manager.get_source(&table_id);
         assert!(get_source_res.is_err());
