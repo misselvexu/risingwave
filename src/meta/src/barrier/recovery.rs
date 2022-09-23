@@ -93,12 +93,14 @@ where
         to_drop_table_fragments
             .sort_by(|f1, f2| f1.table_id().table_id.cmp(&f2.table_id().table_id));
 
-        for table_fragment in to_drop_table_fragments {
-            debug!("clean dirty table fragments: {}", table_fragment.table_id());
-            self.fragment_manager
-                .drop_table_fragments(&table_fragment.table_id())
-                .await?;
-        }
+        let table_ids = to_drop_table_fragments
+            .iter()
+            .map(|t| t.table_id())
+            .collect::<HashSet<_>>();
+        debug!("clean dirty table fragments: {:?}", table_ids);
+        self.fragment_manager
+            .drop_table_fragments_vec(&table_ids)
+            .await?;
 
         Ok(())
     }

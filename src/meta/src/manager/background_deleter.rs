@@ -92,9 +92,7 @@ impl StreamingJobBackgroundDeleter {
         });
 
         // TODO(zehua): add batch.
-        for id in table_ids {
-            stream_manager.drop_materialized_view(id).await?;
-        }
+        stream_manager.drop_materialized_views(table_ids).await?;
 
         for id in source_ids {
             source_manager.drop_source(id).await?;

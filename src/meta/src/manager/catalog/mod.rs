@@ -23,7 +23,7 @@ use std::sync::Arc;
 use anyhow::anyhow;
 use database::*;
 pub use fragment::*;
-use futures::future;
+use futures::future::try_join_all;
 use itertools::Itertools;
 use risingwave_common::catalog::{
     valid_table_name, DEFAULT_DATABASE_NAME, DEFAULT_SCHEMA_NAME, DEFAULT_SUPER_USER,
@@ -41,7 +41,7 @@ use tokio::sync::{Mutex, MutexGuard};
 use user::*;
 
 use crate::manager::{IdCategory, MetaSrvEnv, NotificationVersion, StreamingJob, StreamingJobId};
-use crate::model::{MetadataModel, MetadataModelResult, Transactional};
+use crate::model::{MetadataModel, Transactional};
 use crate::storage::{MetaStore, Transaction};
 use crate::{MetaError, MetaResult};
 
@@ -491,15 +491,15 @@ where
                     let mut transaction = Transaction::default();
 
                     let mut tables_to_drop =
-                        future::join_all(internal_table_ids.into_iter().map(|id| async move {
+                        try_join_all(internal_table_ids.into_iter().map(|id| async move {
                             Table::select(self.env.meta_store(), &id).await
                         }))
-                        .await
+                        .await?
                         .into_iter()
-                        // FIXME(zehua): use `map_ok(|table| table.unwrap())` instead of this after
+                        // FIXME(zehua): use `map(|table| table.unwrap())` instead of this after
                         // source node's state table has catalog.
-                        .filter_map_ok(|table| table)
-                        .collect::<MetadataModelResult<Vec<_>>>()?;
+                        .flatten()
+                        .collect_vec();
                     tables_to_drop.push(table);
 
                     for table in &tables_to_drop {
@@ -579,16 +579,15 @@ where
                         let dependent_relations = table.dependent_relations.clone();
 
                         let mut tables_to_drop =
-                            future::join_all(internal_table_ids.into_iter().map(|id| async move {
+                            try_join_all(internal_table_ids.into_iter().map(|id| async move {
                                 Table::select(self.env.meta_store(), &id).await
                             }))
-                            .await
+                            .await?
                             .into_iter()
-                            // FIXME(zehua): use `map_ok(|table| table.unwrap())` instead of this
-                            // after source node's state table has
-                            // catalog.
-                            .filter_map_ok(|table| table)
-                            .collect::<MetadataModelResult<Vec<_>>>()?;
+                            // FIXME(zehua): use `map(|table| table.unwrap())` instead of this after
+                            // source node's state table has catalog.
+                            .flatten()
+                            .collect_vec();
                         tables_to_drop.push(table);
 
                         for table in &tables_to_drop {

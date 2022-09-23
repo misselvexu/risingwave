@@ -268,48 +268,69 @@ where
 
     /// Drop table fragments info and remove downstream actor infos in fragments from its dependent
     /// tables.
-    pub async fn drop_table_fragments(&self, table_id: &TableId) -> MetaResult<()> {
+    pub async fn drop_table_fragments_vec(&self, table_ids: &HashSet<TableId>) -> MetaResult<()> {
         let map = &mut self.core.write().await.table_fragments;
+        let table_fragments_vec = table_ids
+            .iter()
+            .map(|table_id| map.get(table_id).unwrap())
+            .collect_vec();
 
-        if let Some(table_fragments) = map.get(table_id) {
-            let mut transaction = Transaction::default();
+        let mut transaction = Transaction::default();
+        for table_fragments in &table_fragments_vec {
             table_fragments.delete_in_transaction(&mut transaction)?;
+        }
 
-            let dependent_table_ids = table_fragments.dependent_table_ids();
-            let chain_actor_ids = table_fragments.chain_actor_ids();
-            let mut dependent_tables = Vec::with_capacity(dependent_table_ids.len());
-            for dependent_table_id in dependent_table_ids {
-                let mut dependent_table = map
-                    .get(&dependent_table_id)
-                    .ok_or_else(|| anyhow!("table_fragment not exist: id={}", dependent_table_id))?
-                    .clone();
-                for fragment in dependent_table.fragments.values_mut() {
-                    if fragment.fragment_type == FragmentType::Sink as i32 {
-                        for actor in &mut fragment.actors {
-                            // Remove these downstream actor ids from all dispatchers.
-                            for dispatcher in &mut actor.dispatcher {
-                                dispatcher
-                                    .downstream_actor_id
-                                    .retain(|x| !chain_actor_ids.contains(x));
-                            }
-                            // Remove empty dispatchers.
-                            actor
-                                .dispatcher
-                                .retain(|d| !d.downstream_actor_id.is_empty());
-                        }
-                    }
-                }
-                dependent_table.upsert_in_transaction(&mut transaction)?;
-                dependent_tables.push(dependent_table);
-            }
+        let chain_actor_ids = table_fragments_vec
+            .iter()
+            .flat_map(|table_fragments| table_fragments.chain_actor_ids())
+            .collect_vec();
 
-            self.env.meta_store().txn(transaction).await?;
-            let delete_table_fragments = map.remove(table_id).unwrap();
-            for dependent_table in dependent_tables {
-                map.insert(dependent_table.table_id(), dependent_table);
-            }
+        let dependent_table_ids = table_fragments_vec
+            .iter()
+            .flat_map(|table_fragments| table_fragments.dependent_table_ids())
+            .filter(|table_id| !table_ids.contains(table_id))
+            .collect::<HashSet<_>>();
 
-            self.notify_fragment_mapping(&delete_table_fragments, Operation::Delete)
+        let mut dependent_tables = dependent_table_ids
+            .iter()
+            .map(|table_id| {
+                map.get(table_id)
+                    .cloned()
+                    .ok_or_else(|| anyhow!("table_fragment not exist: id={}", table_id).into())
+            })
+            .collect::<MetaResult<Vec<_>>>()?;
+
+        dependent_tables
+            .iter_mut()
+            .flat_map(|table_fragments| table_fragments.fragments.values_mut())
+            .filter(|fragment| fragment.fragment_type == FragmentType::Sink as i32)
+            .flat_map(|fragment| &mut fragment.actors)
+            .for_each(|actor| {
+                actor.dispatcher.retain_mut(|dispatcher| {
+                    dispatcher
+                        .downstream_actor_id
+                        .retain(|x| !chain_actor_ids.contains(x));
+                    !dispatcher.downstream_actor_id.is_empty()
+                });
+            });
+
+        for dependent_table in &dependent_tables {
+            dependent_table.upsert_in_transaction(&mut transaction)?;
+        }
+
+        self.env.meta_store().txn(transaction).await?;
+
+        let delete_table_fragments = map
+            .drain_filter(|k, _| table_ids.contains(k))
+            .map(|(_, v)| v)
+            .collect_vec();
+
+        for dependent_table in dependent_tables {
+            map.insert(dependent_table.table_id(), dependent_table);
+        }
+
+        for table_fragments in delete_table_fragments {
+            self.notify_fragment_mapping(&table_fragments, Operation::Delete)
                 .await;
         }
 
