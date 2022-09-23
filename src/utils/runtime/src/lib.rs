@@ -19,7 +19,8 @@ use std::time::Duration;
 
 use futures::Future;
 use tracing::Level;
-use tracing_subscriber::filter;
+use tracing_opentelemetry::OpenTelemetryLayer;
+use tracing_subscriber::filter::{self, Targets};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::prelude::*;
 
@@ -114,9 +115,24 @@ pub fn init_risingwave_logger(settings: LoggerSettings) {
         fmt_layer.with_filter(filter)
     };
 
-    // if settings.enable_jaeger_tracing {
-    //     todo!("jaeger tracing is not supported for now, and it will be replaced with minitrace jaeger tracing. Tracking issue: https://github.com/risingwavelabs/risingwave/issues/4120");
-    // }
+    let tracing_layer = if settings.enable_jaeger_tracing {
+        let tracer = opentelemetry_jaeger::new_pipeline()
+            .with_service_name("risingwave")
+            .with_agent_endpoint("localhost:6831") // May remove this?
+            .install_simple()
+            .unwrap();
+
+        Some(
+            OpenTelemetryLayer::new(tracer).with_filter(
+                Targets::new()
+                    .with_target("tokio", Level::WARN)
+                    .with_target("runtime", Level::WARN)
+                    .with_target("risingwave", Level::INFO),
+            ),
+        )
+    } else {
+        None
+    };
 
     let tokio_console_layer = if settings.enable_tokio_console {
         let (console_layer, server) = console_subscriber::ConsoleLayer::builder()
@@ -132,12 +148,15 @@ pub fn init_risingwave_logger(settings: LoggerSettings) {
         None
     };
 
-    match tokio_console_layer {
-        Some((tokio_console_layer, server)) => {
-            tracing_subscriber::registry()
-                .with(fmt_layer)
-                .with(tokio_console_layer)
-                .init();
+    let registry = tracing_subscriber::registry().with(fmt_layer);
+    match (tracing_layer, tokio_console_layer) {
+        (Some(_), Some(_)) => {
+            panic!("Cannot enable tracing and tokio console at the same time.");
+        }
+        (Some(tracing_layer), None) => {
+            registry.with(tracing_layer).init();
+        }
+        (None, Some((tokio_console_layer, server))) => {
             std::thread::spawn(|| {
                 tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -148,10 +167,9 @@ pub fn init_risingwave_logger(settings: LoggerSettings) {
                         server.serve().await.unwrap();
                     });
             });
+            registry.with(tokio_console_layer).init();
         }
-        None => {
-            tracing_subscriber::registry().with(fmt_layer).init();
-        }
+        (None, None) => registry.init(),
     }
 
     // TODO: add file-appender tracing subscriber in the future
