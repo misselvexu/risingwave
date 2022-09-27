@@ -283,13 +283,13 @@ where
             catalog_deleted_ids.extend(
                 valid_tables
                     .into_iter()
-                    .map(|table| StreamingJobId::TableId(table.id.into())),
+                    .map(|table| StreamingJobId::Table(table.id.into())),
             );
-            catalog_deleted_ids.extend(source_ids.into_iter().map(StreamingJobId::SourceId));
+            catalog_deleted_ids.extend(source_ids.into_iter().map(StreamingJobId::Source));
             catalog_deleted_ids.extend(
                 sinks
                     .into_iter()
-                    .map(|sink| StreamingJobId::SinkId(sink.id.into())),
+                    .map(|sink| StreamingJobId::Sink(sink.id.into())),
             );
 
             Ok((version, catalog_deleted_ids))
@@ -496,10 +496,9 @@ where
                         }))
                         .await?
                         .into_iter()
-                        // FIXME(zehua): use `map(|table| table.unwrap())` instead of this after
-                        // source node's state table has catalog.
-                        .flatten()
+                        .map(|table| table.unwrap())
                         .collect_vec();
+
                     tables_to_drop.push(table);
 
                     for table in &tables_to_drop {
@@ -584,10 +583,9 @@ where
                             }))
                             .await?
                             .into_iter()
-                            // FIXME(zehua): use `map(|table| table.unwrap())` instead of this after
-                            // source node's state table has catalog.
-                            .flatten()
+                            .map(|table| table.unwrap())
                             .collect_vec();
+
                         tables_to_drop.push(table);
 
                         for table in &tables_to_drop {
@@ -812,6 +810,7 @@ where
         &self,
         source_id: SourceId,
         mview_id: TableId,
+        internal_table_id: TableId,
     ) -> MetaResult<NotificationVersion> {
         let core = &mut *self.core.lock().await;
         let database_core = &mut core.database;
@@ -842,18 +841,28 @@ where
                         source.name, ref_count
                     )));
                 }
+                let internal_table = Table::select(self.env.meta_store(), &internal_table_id)
+                    .await?
+                    .unwrap();
 
                 // now is safe to delete both mview and source
                 let mut transaction = Transaction::default();
                 let users_need_update = Self::release_privileges(
                     user_core.list_users(),
-                    &[Object::SourceId(source_id), Object::TableId(mview_id)],
+                    &[
+                        Object::SourceId(source_id),
+                        Object::TableId(mview_id),
+                        Object::TableId(internal_table_id),
+                    ],
                     &mut transaction,
                 )?;
                 mview.delete_in_transaction(&mut transaction)?;
+                internal_table.delete_in_transaction(&mut transaction)?;
                 source.delete_in_transaction(&mut transaction)?;
                 self.env.meta_store().txn(transaction).await?;
+
                 database_core.drop_table(&mview);
+                database_core.drop_table(&internal_table);
                 database_core.drop_source(&source);
                 for &dependent_relation_id in &mview.dependent_relations {
                     database_core.decrease_ref_count(dependent_relation_id);
@@ -865,6 +874,8 @@ where
                         .await;
                 }
                 self.notify_frontend(Operation::Delete, Info::Table(mview))
+                    .await;
+                self.notify_frontend(Operation::Delete, Info::Table(internal_table))
                     .await;
 
                 let version = self
