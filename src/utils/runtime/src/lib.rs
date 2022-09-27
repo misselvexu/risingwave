@@ -14,6 +14,8 @@
 
 //! Configures the RisingWave binary, including logging, locks, panic handler, etc.
 
+mod trace_runtime;
+
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -88,6 +90,8 @@ pub fn set_panic_abort() {
 
 /// Init logger for RisingWave binaries.
 pub fn init_risingwave_logger(settings: LoggerSettings) {
+    use isahc::config::Configurable;
+
     let fmt_layer = {
         // Configure log output to stdout
         let fmt_layer = tracing_subscriber::fmt::layer()
@@ -115,12 +119,23 @@ pub fn init_risingwave_logger(settings: LoggerSettings) {
         fmt_layer.with_filter(filter)
     };
 
-    let tracing_layer = if settings.enable_jaeger_tracing {
+    let opentelemetry_layer = if settings.enable_jaeger_tracing {
+        // With Jaeger tracing enabled, we should configure opentelemetry endpoints.
+
+        opentelemetry::global::set_text_map_propagator(opentelemetry_jaeger::Propagator::new());
+
         let tracer = opentelemetry_jaeger::new_pipeline()
+            // TODO(Chi): use UDP tracing in production environment
+            .with_collector_endpoint("http://127.0.0.1:14268/api/traces")
             .with_service_name("risingwave")
-            .with_agent_endpoint("localhost:6831") // May remove this?
-            .install_simple()
+            // disable proxy
+            .with_http_client(isahc::HttpClient::builder().proxy(None).build().unwrap())
+            .install_batch(trace_runtime::RwTokio)
             .unwrap();
+        // let tracer = opentelemetry_jaeger::new_pipeline()
+        //     .with_service_name("risingwave")
+        //     .install_simple()
+        //     .unwrap();
 
         Some(
             OpenTelemetryLayer::new(tracer).with_filter(
@@ -149,7 +164,7 @@ pub fn init_risingwave_logger(settings: LoggerSettings) {
     };
 
     let registry = tracing_subscriber::registry().with(fmt_layer);
-    match (tracing_layer, tokio_console_layer) {
+    match (opentelemetry_layer, tokio_console_layer) {
         (Some(_), Some(_)) => {
             panic!("Cannot enable tracing and tokio console at the same time.");
         }

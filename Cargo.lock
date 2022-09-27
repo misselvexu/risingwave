@@ -3337,6 +3337,21 @@ dependencies = [
  "pin-project 1.0.12",
  "rand 0.8.5",
  "thiserror",
+ "tokio",
+ "tokio-stream",
+]
+
+[[package]]
+name = "opentelemetry-http"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "449048140ee61e28f57abe6e9975eedc1f3a29855c7407bd6c12b18578863379"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "http",
+ "isahc",
+ "opentelemetry 0.17.0",
 ]
 
 [[package]]
@@ -3346,11 +3361,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8c0b12cd9e3f9b35b52f6e0dac66866c519b26f424f4bbf96e3fe8bfbdc5229"
 dependencies = [
  "async-trait",
+ "http",
+ "isahc",
  "lazy_static",
  "opentelemetry 0.17.0",
+ "opentelemetry-http",
  "opentelemetry-semantic-conventions",
  "thiserror",
  "thrift",
+ "tokio",
 ]
 
 [[package]]
@@ -4960,11 +4979,13 @@ dependencies = [
  "console",
  "console-subscriber",
  "futures",
+ "isahc",
  "madsim-tokio",
  "opentelemetry 0.17.0",
  "opentelemetry-jaeger",
  "parking_lot 0.12.1",
  "pprof",
+ "thrift",
  "tokio-stream",
  "tracing",
  "tracing-jaeger",

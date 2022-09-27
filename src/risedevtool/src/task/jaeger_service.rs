@@ -49,7 +49,7 @@ impl Task for JaegerService {
 
         let path = self.jaeger_path()?;
         if !path.exists() {
-            return Err(anyhow!("jeager-all-in-one binary not found in {:?}\nDid you enable tracing feature in `./risedev configure`?", path));
+            return Err(anyhow!("jaeger-all-in-one binary not found in {:?}\nDid you enable tracing feature in `./risedev configure`?", path));
         }
 
         let mut cmd = self.jaeger()?;
