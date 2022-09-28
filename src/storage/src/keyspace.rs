@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::fmt::Debug;
 use std::future::Future;
 use std::ops::RangeBounds;
 
@@ -23,7 +24,6 @@ use crate::error::StorageResult;
 use crate::store::{ReadOptions, WriteOptions};
 use crate::write_batch::KeySpaceWriteBatch;
 use crate::{StateStore, StateStoreIter};
-
 /// Provides API to read key-value pairs of a prefix in the storage backend.
 #[derive(Clone)]
 pub struct Keyspace<S: StateStore> {
@@ -86,10 +86,10 @@ impl<S: StateStore> Keyspace<S> {
         self.store.get(&self.prefix, true, read_options).await
     }
 
-    /// Concatenates this keyspace and the given key to produce a prefixed key.
-    pub fn prefixed_key(&self, key: impl AsRef<[u8]>) -> Vec<u8> {
-        [self.prefix.as_slice(), key.as_ref()].concat()
-    }
+    // /// Concatenates this keyspace and the given key to produce a prefixed key.
+    // pub fn prefixed_key(&self, key: impl AsRef<[u8]>) -> Vec<u8> {
+    //     [self.prefix.as_slice(), key.as_ref()].concat()
+    // }
 
     /// Gets from the keyspace with the `prefixed_key` of given key.
     /// The returned value is based on a snapshot corresponding to the given `epoch`.
@@ -100,7 +100,7 @@ impl<S: StateStore> Keyspace<S> {
         read_options: ReadOptions,
     ) -> StorageResult<Option<Bytes>> {
         self.store
-            .get(&self.prefixed_key(key), check_bloom_filter, read_options)
+            .get(key.as_ref(), check_bloom_filter, read_options)
             .await
     }
 
@@ -160,13 +160,13 @@ impl<S: StateStore> Keyspace<S> {
         read_options: ReadOptions,
     ) -> StorageResult<StripPrefixIterator<S::Iter>>
     where
-        R: RangeBounds<B> + Send,
-        B: AsRef<[u8]> + Send,
+        R: RangeBounds<B> + Send + 'static + Debug,
+        B: AsRef<[u8]> + Send + 'static,
     {
-        let range = prefixed_range(range, &self.prefix);
-        let prefix_hint =
-            prefix_hint.map(|prefix_hint| [self.prefix.to_vec(), prefix_hint].concat());
-
+        // let range = prefixed_range(range, &self.prefix);
+        // let prefix_hint =
+        //     prefix_hint.map(|prefix_hint| [self.prefix.to_vec(), prefix_hint].concat());
+        println!("\n ---- store的range = {:?}", range);
         let iter = self.store.iter(prefix_hint, range, read_options).await?;
         let strip_prefix_iterator = StripPrefixIterator {
             iter,
@@ -203,12 +203,6 @@ impl<I: StateStoreIter<Item = (Bytes, Bytes)>> StateStoreIter for StripPrefixIte
         impl Future<Output = crate::error::StorageResult<Option<Self::Item>>> + Send;
 
     fn next(&mut self) -> Self::NextFuture<'_> {
-        async move {
-            Ok(self
-                .iter
-                .next()
-                .await?
-                .map(|(key, value)| (key.slice(self.prefix_len..), value)))
-        }
+        async move { Ok(self.iter.next().await?.map(|(key, value)| (key, value))) }
     }
 }

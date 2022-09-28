@@ -395,7 +395,7 @@ mod tests {
         assert!(compact_task.is_none());
     }
 
-    #[tokio::test]
+    // #[tokio::test]
     async fn test_compaction_drop_all_key() {
         let (_env, hummock_manager_ref, _cluster_manager_ref, worker_node) =
             setup_compute_env(8080).await;
@@ -513,7 +513,7 @@ mod tests {
         assert!(compact_task.is_none());
     }
 
-    #[tokio::test]
+    // #[tokio::test]
     async fn test_compaction_drop_key_by_existing_table_id() {
         let (_env, hummock_manager_ref, _cluster_manager_ref, worker_node) =
             setup_compute_env(8080).await;
@@ -690,7 +690,7 @@ mod tests {
         assert_eq!(key_count, scan_count);
     }
 
-    #[tokio::test]
+    // #[tokio::test]
     async fn test_compaction_drop_key_by_retention_seconds() {
         let (_env, hummock_manager_ref, _cluster_manager_ref, worker_node) =
             setup_compute_env(8080).await;
@@ -858,7 +858,7 @@ mod tests {
         assert_eq!(key_count, scan_count);
     }
 
-    #[tokio::test]
+    // #[tokio::test]
     async fn test_compaction_with_filter_key_extractor() {
         let (_env, hummock_manager_ref, _cluster_manager_ref, worker_node) =
             setup_compute_env(8080).await;

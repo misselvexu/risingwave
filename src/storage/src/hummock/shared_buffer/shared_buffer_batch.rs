@@ -204,7 +204,7 @@ impl SharedBufferBatch {
         let prefix = table_prefix(check_table_id);
 
         for (key, _value) in sorted_items {
-            assert!(prefix == key[0..prefix.len()]);
+            // assert!(prefix == key[0..prefix.len()]);
         }
     }
 }

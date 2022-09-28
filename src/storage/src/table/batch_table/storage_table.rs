@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::fmt::Debug;
 use std::ops::Bound::{self, Excluded, Included, Unbounded};
 use std::ops::RangeBounds;
 use std::sync::Arc;
@@ -29,7 +30,7 @@ use risingwave_common::error::RwError;
 use risingwave_common::types::{Datum, VirtualNode};
 use risingwave_common::util::ordered::*;
 use risingwave_common::util::sort_util::OrderType;
-use risingwave_hummock_sdk::key::{end_bound_of_prefix, next_key, prefixed_range};
+use risingwave_hummock_sdk::key::{end_bound_of_prefix, next_key, prefixed_range, table_prefix};
 use risingwave_hummock_sdk::HummockReadEpoch;
 use tracing::trace;
 
@@ -219,6 +220,11 @@ impl<S: StateStore> StorageTable<S> {
             .then(|| compute_vnode(pk_prefix, &self.dist_key_in_pk_indices, &self.vnodes))
     }
 
+    /// Concatenates this keyspace and the given key to produce a prefixed key.
+    pub fn concat_table_id(&self, key: Vec<u8>) -> Vec<u8> {
+        [table_prefix(self.keyspace.table_id().table_id), key].concat()
+    }
+
     /// Get a single row by point get
     pub async fn get_row(
         &mut self,
@@ -232,6 +238,7 @@ impl<S: StateStore> StorageTable<S> {
             .await?;
         let serialized_pk =
             serialize_pk_with_vnode(pk, &self.pk_serializer, self.compute_vnode_by_pk(pk));
+        let serialized_pk = self.concat_table_id(serialized_pk);
         let read_options = self.get_read_option(epoch);
         assert!(pk.size() <= self.pk_indices.len());
         let key_indices = (0..pk.size())
@@ -313,10 +320,11 @@ impl<S: StateStore> StorageTable<S> {
         // TODO: if there're some vnodes continuously in the range and we don't care about order, we
         // can use a single iterator.
         let iterators: Vec<_> = try_join_all(vnodes.map(|vnode| {
-            let raw_key_range = prefixed_range(encoded_key_range.clone(), &vnode.to_be_bytes());
+            let table_id_and_vnode = self.concat_table_id(vnode.to_be_bytes().to_vec());
+            let raw_key_range = prefixed_range(encoded_key_range.clone(), &table_id_and_vnode);
             let prefix_hint = prefix_hint
                 .clone()
-                .map(|prefix_hint| [&vnode.to_be_bytes(), prefix_hint.as_slice()].concat());
+                .map(|prefix_hint| [&table_id_and_vnode, prefix_hint.as_slice()].concat());
             let wait_epoch = wait_epoch.clone();
             async move {
                 let read_options = self.get_read_option(wait_epoch.get_epoch());
@@ -364,6 +372,7 @@ impl<S: StateStore> StorageTable<S> {
             pk_prefix: &Row,
             next_col_bound: Bound<&Datum>,
             is_start_bound: bool,
+            table_id: Vec<u8>,
         ) -> Bound<Vec<u8>> {
             match next_col_bound {
                 Included(k) => {
@@ -371,6 +380,7 @@ impl<S: StateStore> StorageTable<S> {
                     let mut key = pk_prefix.clone();
                     key.0.push(k.clone());
                     let serialized_key = serialize_pk(&key, &pk_prefix_serializer);
+                    let serialized_key = [table_id, serialized_key].concat();
                     if is_start_bound {
                         Included(serialized_key)
                     } else {
@@ -384,6 +394,7 @@ impl<S: StateStore> StorageTable<S> {
                     let mut key = pk_prefix.clone();
                     key.0.push(k.clone());
                     let serialized_key = serialize_pk(&key, &pk_prefix_serializer);
+                    let serialized_key = [table_id, serialized_key].concat();
                     if is_start_bound {
                         // storage doesn't support excluded begin key yet, so transform it to
                         // included
@@ -397,6 +408,7 @@ impl<S: StateStore> StorageTable<S> {
                 Unbounded => {
                     let pk_prefix_serializer = pk_serializer.prefix(pk_prefix.size());
                     let serialized_pk_prefix = serialize_pk(pk_prefix, &pk_prefix_serializer);
+                    let serialized_pk_prefix = [table_id, serialized_pk_prefix].concat();
                     if pk_prefix.size() == 0 {
                         Unbounded
                     } else if is_start_bound {
@@ -408,17 +420,20 @@ impl<S: StateStore> StorageTable<S> {
             }
         }
 
+        let table_id = table_prefix(self.keyspace.table_id().table_id);
         let start_key = serialize_pk_bound(
             &self.pk_serializer,
             pk_prefix,
             next_col_bounds.start_bound(),
             true,
+            table_id.clone(),
         );
         let end_key = serialize_pk_bound(
             &self.pk_serializer,
             pk_prefix,
             next_col_bounds.end_bound(),
             false,
+            table_id,
         );
 
         assert!(pk_prefix.size() <= self.pk_indices.len());
@@ -502,8 +517,8 @@ impl<S: StateStore> StorageTableIterInner<S> {
         epoch: HummockReadEpoch,
     ) -> StorageResult<Self>
     where
-        R: RangeBounds<B> + Send,
-        B: AsRef<[u8]> + Send,
+        R: RangeBounds<B> + Send + Debug + 'static,
+        B: AsRef<[u8]> + Send + 'static,
     {
         keyspace.state_store().try_wait_epoch(epoch).await?;
         let iter = keyspace

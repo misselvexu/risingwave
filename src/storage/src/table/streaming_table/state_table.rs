@@ -15,6 +15,7 @@
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
+use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::ops::RangeBounds;
 use std::sync::Arc;
@@ -31,7 +32,7 @@ use risingwave_common::types::VirtualNode;
 use risingwave_common::util::epoch::EpochPair;
 use risingwave_common::util::ordered::{OrderedRowDeserializer, OrderedRowSerializer};
 use risingwave_common::util::sort_util::OrderType;
-use risingwave_hummock_sdk::key::{prefixed_range, range_of_prefix};
+use risingwave_hummock_sdk::key::{prefixed_range, range_of_prefix, table_prefix};
 use risingwave_pb::catalog::Table;
 use tracing::trace;
 
@@ -373,6 +374,11 @@ impl<S: StateStore> StateTable<S> {
             retention_seconds: self.table_option.retention_seconds,
         }
     }
+
+    /// Concatenates this keyspace and the given key to produce a prefixed key.
+    pub fn concat_table_id(&self, key: Vec<u8>) -> Vec<u8> {
+        [table_prefix(self.table_id().table_id), key].concat()
+    }
 }
 
 const ENABLE_SANITY_CHECK: bool = cfg!(debug_assertions);
@@ -383,6 +389,7 @@ impl<S: StateStore> StateTable<S> {
     pub async fn get_row<'a>(&'a self, pk: &'a Row) -> StorageResult<Option<Row>> {
         let serialized_pk =
             serialize_pk_with_vnode(pk, &self.pk_serializer, self.compute_vnode(pk));
+        let serialized_pk = self.concat_table_id(serialized_pk);
         let mem_table_res = self.mem_table.get_row_op(&serialized_pk);
 
         let read_options = self.get_read_option(self.epoch());
@@ -464,6 +471,9 @@ impl<S: StateStore> StateTable<S> {
         let pk = value.by_indices(self.pk_indices());
 
         let key_bytes = serialize_pk_with_vnode(&pk, &self.pk_serializer, self.compute_vnode(&pk));
+        let key_bytes = self.concat_table_id(key_bytes);
+
+        println!("insert写入的key = {:?}", key_bytes);
         let value_bytes = value.serialize(&self.value_indices);
         self.mem_table
             .insert(key_bytes, value_bytes)
@@ -475,6 +485,8 @@ impl<S: StateStore> StateTable<S> {
     pub fn delete(&mut self, old_value: Row) {
         let pk = old_value.by_indices(self.pk_indices());
         let key_bytes = serialize_pk_with_vnode(&pk, &self.pk_serializer, self.compute_vnode(&pk));
+        let key_bytes = self.concat_table_id(key_bytes);
+        println!("delete写入的key = {:?}", key_bytes);
         let value_bytes = old_value.serialize(&self.value_indices);
         self.mem_table
             .delete(key_bytes, value_bytes)
@@ -489,7 +501,8 @@ impl<S: StateStore> StateTable<S> {
 
         let new_key_bytes =
             serialize_pk_with_vnode(&new_pk, &self.pk_serializer, self.compute_vnode(&new_pk));
-
+        let new_key_bytes = self.concat_table_id(new_key_bytes);
+        println!("update写入的key = {:?}", new_key_bytes);
         self.mem_table
             .update(
                 new_key_bytes,
@@ -527,6 +540,7 @@ impl<S: StateStore> StateTable<S> {
         match vis {
             Vis::Bitmap(vis) => {
                 for ((op, key, value), vis) in izip!(op, vnode_and_pks, values).zip_eq(vis.iter()) {
+                    let key = self.concat_table_id(key);
                     if vis {
                         match op {
                             Op::Insert | Op::UpdateInsert => self.mem_table.insert(key, value),
@@ -538,6 +552,7 @@ impl<S: StateStore> StateTable<S> {
             }
             Vis::Compact(_) => {
                 for (op, key, value) in izip!(op, vnode_and_pks, values) {
+                    let key = self.concat_table_id(key);
                     match op {
                         Op::Insert | Op::UpdateInsert => self.mem_table.insert(key, value),
                         Op::Delete | Op::UpdateDelete => self.mem_table.delete(key, value),
@@ -738,8 +753,10 @@ impl<S: StateStore> StateTable<S> {
         // If this assertion fails, then something must be wrong with the operator implementation or
         // the distribution derivation from the optimizer.
         let vnode = self.compute_vnode(pk_prefix).to_be_bytes();
-        let encoded_key_range_with_vnode = prefixed_range(encoded_key_range, &vnode);
+        let table_id_and_vnode = self.concat_table_id(vnode.to_vec());
+        let encoded_key_range_with_vnode = prefixed_range(encoded_key_range, &table_id_and_vnode);
 
+        println!("Mem Table scan的范围: {:?}", encoded_key_range_with_vnode);
         // Mem table iterator.
         let mem_table_iter = self.mem_table.iter(encoded_key_range_with_vnode.clone());
 
@@ -751,7 +768,7 @@ impl<S: StateStore> StateTable<S> {
                 if self.dist_key_indices.is_empty() || self.dist_key_indices != pk_prefix_indices {
                     None
                 } else {
-                    Some([&vnode, &encoded_prefix[..]].concat())
+                    Some([&table_id_and_vnode, &encoded_prefix[..]].concat())
                 }
             };
 
@@ -919,8 +936,8 @@ impl<S: StateStore> StorageIterInner<S> {
         data_types: DataTypes,
     ) -> StorageResult<Self>
     where
-        R: RangeBounds<B> + Send,
-        B: AsRef<[u8]> + Send,
+        R: RangeBounds<B> + Send + Debug + 'static,
+        B: AsRef<[u8]> + Send + 'static,
     {
         let iter = keyspace
             .iter_with_range(prefix_hint, raw_key_range, read_options)
