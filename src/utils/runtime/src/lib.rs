@@ -91,101 +91,104 @@ pub fn set_panic_abort() {
 /// Init logger for RisingWave binaries.
 pub fn init_risingwave_logger(settings: LoggerSettings) {
     use isahc::config::Configurable;
+    std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .thread_name("risingwave_tracing")
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let fmt_layer = {
+                    // Configure log output to stdout
+                    let fmt_layer = tracing_subscriber::fmt::layer()
+                        .compact()
+                        .with_ansi(settings.colorful);
 
-    let fmt_layer = {
-        // Configure log output to stdout
-        let fmt_layer = tracing_subscriber::fmt::layer()
-            .compact()
-            .with_ansi(settings.colorful);
+                    let filter = filter::Targets::new()
+                        // Only enable WARN and ERROR for 3rd-party crates
+                        .with_target("aws_endpoint", Level::WARN)
+                        .with_target("hyper", Level::WARN)
+                        .with_target("h2", Level::WARN)
+                        .with_target("tower", Level::WARN)
+                        .with_target("isahc", Level::WARN)
+                        .with_target("console_subscriber", Level::WARN);
 
-        let filter = filter::Targets::new()
-            // Only enable WARN and ERROR for 3rd-party crates
-            .with_target("aws_endpoint", Level::WARN)
-            .with_target("hyper", Level::WARN)
-            .with_target("h2", Level::WARN)
-            .with_target("tower", Level::WARN)
-            .with_target("isahc", Level::WARN)
-            .with_target("console_subscriber", Level::WARN);
+                    // Configure RisingWave's own crates to log at TRACE level, uncomment the
+                    // following line if needed.
 
-        // Configure RisingWave's own crates to log at TRACE level, uncomment the following line if
-        // needed.
+                    let filter = configure_risingwave_targets_fmt(filter);
 
-        let filter = configure_risingwave_targets_fmt(filter);
+                    // Enable DEBUG level for all other crates
+                    // TODO: remove this in release mode
+                    let filter = filter.with_default(Level::DEBUG);
 
-        // Enable DEBUG level for all other crates
-        // TODO: remove this in release mode
-        let filter = filter.with_default(Level::DEBUG);
+                    fmt_layer.with_filter(filter)
+                };
 
-        fmt_layer.with_filter(filter)
-    };
+                let opentelemetry_layer = if settings.enable_jaeger_tracing {
+                    // With Jaeger tracing enabled, we should configure opentelemetry endpoints.
 
-    let opentelemetry_layer = if settings.enable_jaeger_tracing {
-        // With Jaeger tracing enabled, we should configure opentelemetry endpoints.
+                    opentelemetry::global::set_text_map_propagator(
+                        opentelemetry_jaeger::Propagator::new(),
+                    );
 
-        opentelemetry::global::set_text_map_propagator(opentelemetry_jaeger::Propagator::new());
+                    let tracer = opentelemetry_jaeger::new_pipeline()
+                        .with_service_name("risingwave")
+                        // TODO(Chi): use UDP tracing in production environment
+                        .with_collector_endpoint("http://127.0.0.1:14268/api/traces")
+                        // disable proxy
+                        .with_http_client(isahc::HttpClient::builder().proxy(None).build().unwrap())
+                        .install_batch(trace_runtime::RwTokio)
+                        .unwrap();
+                    // let tracer = opentelemetry_jaeger::new_pipeline()
+                    //     .with_service_name("risingwave")
+                    //     .with_agent_endpoint("localhost:6831") // May remove this?
+                    //     .install_simple()
+                    //     .unwrap();
 
-        let tracer = opentelemetry_jaeger::new_pipeline()
-            // TODO(Chi): use UDP tracing in production environment
-            .with_collector_endpoint("http://127.0.0.1:14268/api/traces")
-            .with_service_name("risingwave")
-            // disable proxy
-            .with_http_client(isahc::HttpClient::builder().proxy(None).build().unwrap())
-            .install_batch(trace_runtime::RwTokio)
-            .unwrap();
-        // let tracer = opentelemetry_jaeger::new_pipeline()
-        //     .with_service_name("risingwave")
-        //     .install_simple()
-        //     .unwrap();
+                    Some(
+                        OpenTelemetryLayer::new(tracer).with_filter(
+                            Targets::new()
+                                .with_target("tokio", Level::WARN)
+                                .with_target("runtime", Level::WARN)
+                                .with_target("risingwave", Level::INFO),
+                        ),
+                    )
+                } else {
+                    None
+                };
 
-        Some(
-            OpenTelemetryLayer::new(tracer).with_filter(
-                Targets::new()
-                    .with_target("tokio", Level::WARN)
-                    .with_target("runtime", Level::WARN)
-                    .with_target("risingwave", Level::INFO),
-            ),
-        )
-    } else {
-        None
-    };
+                let tokio_console_layer = if settings.enable_tokio_console {
+                    let (console_layer, server) = console_subscriber::ConsoleLayer::builder()
+                        .with_default_env()
+                        .build();
+                    let console_layer = console_layer.with_filter(
+                        filter::Targets::new()
+                            .with_target("tokio", Level::TRACE)
+                            .with_target("runtime", Level::TRACE),
+                    );
+                    Some((console_layer, server))
+                } else {
+                    None
+                };
 
-    let tokio_console_layer = if settings.enable_tokio_console {
-        let (console_layer, server) = console_subscriber::ConsoleLayer::builder()
-            .with_default_env()
-            .build();
-        let console_layer = console_layer.with_filter(
-            filter::Targets::new()
-                .with_target("tokio", Level::TRACE)
-                .with_target("runtime", Level::TRACE),
-        );
-        Some((console_layer, server))
-    } else {
-        None
-    };
-
-    let registry = tracing_subscriber::registry().with(fmt_layer);
-    match (opentelemetry_layer, tokio_console_layer) {
-        (Some(_), Some(_)) => {
-            panic!("Cannot enable tracing and tokio console at the same time.");
-        }
-        (Some(tracing_layer), None) => {
-            registry.with(tracing_layer).init();
-        }
-        (None, Some((tokio_console_layer, server))) => {
-            std::thread::spawn(|| {
-                tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .unwrap()
-                    .block_on(async move {
+                let registry = tracing_subscriber::registry().with(fmt_layer);
+                match (opentelemetry_layer, tokio_console_layer) {
+                    (Some(_), Some(_)) => {
+                        panic!("Cannot enable tracing and tokio console at the same time.");
+                    }
+                    (Some(tracing_layer), None) => {
+                        registry.with(tracing_layer).init();
+                    }
+                    (None, Some((tokio_console_layer, server))) => {
                         tracing::info!("serving console subscriber");
                         server.serve().await.unwrap();
-                    });
+                        registry.with(tokio_console_layer).init();
+                    }
+                    (None, None) => registry.init(),
+                }
             });
-            registry.with(tokio_console_layer).init();
-        }
-        (None, None) => registry.init(),
-    }
+    });
 
     // TODO: add file-appender tracing subscriber in the future
 }
