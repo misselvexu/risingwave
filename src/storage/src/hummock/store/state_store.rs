@@ -455,7 +455,10 @@ impl HummockStorageCore {
             .in_span(Span::enter_with_local_parent("rewind"))
             .await?;
         local_stats.report(self.stats.deref());
-        Ok(HummockStorageIterator { inner: user_iter })
+        Ok(HummockStorageIterator {
+            inner: user_iter,
+            metrics: self.stats.clone(),
+        })
     }
 
     async fn get_compaction_group_id(&self, table_id: TableId) -> HummockResult<CompactionGroupId> {
@@ -535,6 +538,7 @@ impl StateStore for HummockStorage {
                 .event_sender
                 .send(HummockEvent::ImmToUploader(imm))
                 .unwrap();
+
             Ok(imm_size)
         }
     }
@@ -617,6 +621,7 @@ type HummockStorageIteratorPayload = UnorderedMergeIteratorInner<
 
 pub struct HummockStorageIterator {
     inner: UserIterator<HummockStorageIteratorPayload>,
+    metrics: Arc<StateStoreMetrics>,
 }
 
 impl StateStoreIter for HummockStorageIterator {
@@ -658,5 +663,13 @@ impl HummockStorageIterator {
 
     fn collect_local_statistic(&self, stats: &mut StoreLocalStatistic) {
         self.inner.collect_local_statistic(stats);
+    }
+}
+
+impl Drop for HummockStorageIterator {
+    fn drop(&mut self) {
+        let mut stats = StoreLocalStatistic::default();
+        self.collect_local_statistic(&mut stats);
+        stats.report(&self.metrics);
     }
 }
